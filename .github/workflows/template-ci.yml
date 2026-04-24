@@ -1,0 +1,57 @@
+###############################################################################
+# CareNest — Reusable CI Build Workflow
+# Installs dependencies, runs build (if applicable), and uploads artifacts.
+###############################################################################
+name: CI Build
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "20"
+      working-directory:
+        description: "Working directory for npm commands"
+        required: false
+        type: string
+        default: "."
+      has-build-step:
+        description: "Whether the project has a build script (e.g., frontend)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Install & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+          cache-dependency-path: "${{ inputs.working-directory }}/package-lock.json"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        if: ${{ inputs.has-build-step }}
+        run: npm run build
+
+      - name: Upload build artifacts
+        if: ${{ inputs.has-build-step }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: ${{ inputs.working-directory }}/dist
+          retention-days: 1

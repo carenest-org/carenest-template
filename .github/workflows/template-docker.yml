@@ -1,0 +1,153 @@
+###############################################################################
+# CareNest — Reusable Docker Build + Trivy Scan + Push Workflow
+# Builds the Docker image, scans with Trivy for vulnerabilities,
+# and pushes to DockerHub ONLY if the scan passes.
+#
+# Tagging strategy (all 3 applied):
+#   - latest
+#   - sha-<commit-sha>
+#   - v<semver> (only if a Git tag like v1.2.0 exists)
+###############################################################################
+name: Docker Build, Scan & Push
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Docker image name (e.g., carenest-auth-service)"
+        required: true
+        type: string
+      dockerfile-path:
+        description: "Path to the Dockerfile"
+        required: false
+        type: string
+        default: "./Dockerfile"
+      context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+      trivy-severity:
+        description: "Trivy severity levels to fail on"
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+      trivy-exit-code:
+        description: "Exit code when vulnerabilities are found (1 = fail)"
+        required: false
+        type: string
+        default: "1"
+    outputs:
+      image-tag:
+        description: "The commit SHA tag that was pushed"
+        value: ${{ jobs.docker.outputs.sha-tag }}
+      full-image:
+        description: "Full image reference with SHA tag"
+        value: ${{ jobs.docker.outputs.full-image }}
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: "DockerHub username"
+        required: true
+      DOCKERHUB_TOKEN:
+        description: "DockerHub access token"
+        required: true
+
+jobs:
+  docker:
+    name: Build, Scan & Push
+    runs-on: ubuntu-latest
+    outputs:
+      sha-tag: ${{ steps.meta.outputs.sha-tag }}
+      full-image: ${{ steps.meta.outputs.full-image }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for git tag detection
+
+      # ── Step 1: Generate image tags ──────────────────────────
+      - name: Generate image metadata & tags
+        id: meta
+        run: |
+          REPO="${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.image-name }}"
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          SHA_TAG="sha-${SHA_SHORT}"
+
+          # Always apply: latest + SHA
+          TAGS="${REPO}:latest,${REPO}:${SHA_TAG}"
+
+          # Semantic version tag (only if current commit has a vX.Y.Z tag)
+          GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || true)
+          if [[ "${GIT_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            TAGS="${TAGS},${REPO}:${GIT_TAG}"
+            echo "semver-tag=${GIT_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "sha-tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full-image=${REPO}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+
+          echo "📦 Image: ${REPO}"
+          echo "🏷️  Tags: ${TAGS}"
+
+      # ── Step 2: Setup Docker Buildx ──────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Step 3: Login to DockerHub ───────────────────────────
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Step 4: Build Docker image (no push yet) ─────────────
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile-path }}
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Step 5: Run Trivy vulnerability scan ─────────────────
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.sha-tag }}"
+          format: "table"
+          exit-code: ${{ inputs.trivy-exit-code }}
+          severity: ${{ inputs.trivy-severity }}
+          timeout: "10m"
+
+      - name: Generate Trivy JSON report
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.sha-tag }}"
+          format: "json"
+          output: "trivy-results.json"
+          severity: ${{ inputs.trivy-severity }}
+          timeout: "10m"
+
+      - name: Upload Trivy scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.json
+          retention-days: 30
+
+      # ── Step 6: Push to DockerHub (only if Trivy passed) ─────
+      - name: Push Docker image to DockerHub
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile-path }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha

@@ -1,0 +1,89 @@
+###############################################################################
+# CareNest — Reusable Snyk Dependency Scan Workflow
+# Scans project dependencies for known vulnerabilities.
+# Fails the pipeline on HIGH or CRITICAL severity issues.
+###############################################################################
+name: Snyk Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "20"
+      severity-threshold:
+        description: "Minimum severity to fail on (low|medium|high|critical)"
+        required: false
+        type: string
+        default: "high"
+      working-directory:
+        description: "Working directory for the project"
+        required: false
+        type: string
+        default: "."
+      monitor:
+        description: "Whether to upload snapshot to Snyk dashboard"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      SNYK_TOKEN:
+        description: "Snyk API token"
+        required: true
+
+jobs:
+  snyk-scan:
+    name: Snyk Dependency Scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+          cache-dependency-path: "${{ inputs.working-directory }}/package-lock.json"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Authenticate Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Run Snyk vulnerability scan
+        run: snyk test --severity-threshold=${{ inputs.severity-threshold }} --json > snyk-results.json || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Evaluate Snyk results
+        run: |
+          # Re-run without JSON to get human-readable output and enforce exit code
+          snyk test --severity-threshold=${{ inputs.severity-threshold }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Upload Snyk snapshot to dashboard
+        if: ${{ inputs.monitor && always() }}
+        run: snyk monitor || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Upload Snyk results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-results
+          path: ${{ inputs.working-directory }}/snyk-results.json
+          retention-days: 30

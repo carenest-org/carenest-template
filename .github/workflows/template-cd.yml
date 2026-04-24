@@ -1,0 +1,102 @@
+###############################################################################
+# CareNest — Reusable CD Workflow (GitOps)
+# Clones the manifest repo, updates the image tag for the specified service
+# in values.yaml, commits and pushes. ArgoCD auto-sync handles deployment.
+###############################################################################
+name: CD — Update Manifest
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Service key in values.yaml (auth, appointment, pharmacy, notify, frontend)"
+        required: true
+        type: string
+      image-tag:
+        description: "New image tag to deploy (e.g., sha-abc1234)"
+        required: true
+        type: string
+      manifest-repo:
+        description: "Manifest repository (org/repo format)"
+        required: true
+        type: string
+      values-path:
+        description: "Path to values.yaml inside manifest repo"
+        required: false
+        type: string
+        default: "helm/carenest/values.yaml"
+      target-branch:
+        description: "Branch to update in the manifest repo"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      GH_PAT:
+        description: "GitHub PAT with repo write access to the manifest repo"
+        required: true
+
+jobs:
+  update-manifest:
+    name: Update Manifest Repo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout manifest repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.manifest-repo }}
+          token: ${{ secrets.GH_PAT }}
+          ref: ${{ inputs.target-branch }}
+
+      - name: Install yq
+        uses: mikefarah/yq@master
+
+      - name: Update image tag in values.yaml
+        run: |
+          VALUES_FILE="${{ inputs.values-path }}"
+          SERVICE="${{ inputs.service-name }}"
+          NEW_TAG="${{ inputs.image-tag }}"
+
+          echo "📝 Updating ${SERVICE}.image.tag → ${NEW_TAG}"
+          echo "📂 File: ${VALUES_FILE}"
+          echo ""
+
+          # Show current value
+          CURRENT_TAG=$(yq e ".${SERVICE}.image.tag" "${VALUES_FILE}")
+          echo "🔄 Current tag: ${CURRENT_TAG}"
+          echo "🆕 New tag:     ${NEW_TAG}"
+
+          # Update the tag
+          yq e -i ".${SERVICE}.image.tag = \"${NEW_TAG}\"" "${VALUES_FILE}"
+
+          # Verify the update
+          UPDATED_TAG=$(yq e ".${SERVICE}.image.tag" "${VALUES_FILE}")
+          echo "✅ Verified:    ${UPDATED_TAG}"
+
+          if [ "${UPDATED_TAG}" != "${NEW_TAG}" ]; then
+            echo "❌ Tag update verification failed!"
+            exit 1
+          fi
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "CareNest CI/CD Bot"
+          git config user.email "ci-cd@carenest.io"
+
+          SERVICE="${{ inputs.service-name }}"
+          NEW_TAG="${{ inputs.image-tag }}"
+
+          # Check if there are actual changes
+          if git diff --quiet; then
+            echo "ℹ️  No changes detected — image tag is already ${NEW_TAG}"
+            exit 0
+          fi
+
+          git add "${{ inputs.values-path }}"
+          git commit -m "chore(cd): update ${SERVICE} image to ${NEW_TAG}" \
+                     -m "Service: ${SERVICE}" \
+                     -m "Image Tag: ${NEW_TAG}" \
+                     -m "Triggered by: ${{ github.repository }}@${{ github.sha }}" \
+                     -m "Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push origin ${{ inputs.target-branch }}
+
+          echo "✅ Manifest repo updated — ArgoCD will auto-sync the deployment."

@@ -1,0 +1,60 @@
+###############################################################################
+# CareNest — Reusable SonarQube Scan Workflow
+# Runs SonarQube analysis and enforces quality gate.
+# Fails the pipeline if the quality gate does not pass.
+###############################################################################
+name: SonarQube Scan
+
+on:
+  workflow_call:
+    inputs:
+      project-key:
+        description: "SonarQube project key for this service"
+        required: true
+        type: string
+      sources:
+        description: "Source directory to scan"
+        required: false
+        type: string
+        default: "src"
+      exclusions:
+        description: "Files/directories to exclude from scan"
+        required: false
+        type: string
+        default: "node_modules/**,coverage/**,dist/**,build/**"
+    secrets:
+      SONAR_HOST_URL:
+        description: "SonarQube server URL"
+        required: true
+      SONAR_TOKEN:
+        description: "SonarQube authentication token"
+        required: true
+
+jobs:
+  sonarqube-scan:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for accurate blame/coverage data
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v3
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ inputs.project-key }}
+            -Dsonar.sources=${{ inputs.sources }}
+            -Dsonar.exclusions=${{ inputs.exclusions }}
+            -Dsonar.qualitygate.wait=true
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}

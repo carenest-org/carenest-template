@@ -1,0 +1,28 @@
+###############################################################################
+# CareNest — Reusable Approval Gate Workflow
+# Uses GitHub Environments with protection rules to gate deployments.
+# Configure required reviewers on the "production" environment in
+# GitHub repo Settings → Environments.
+###############################################################################
+name: Approval Gate
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub environment name requiring approval"
+        required: false
+        type: string
+        default: "production"
+
+jobs:
+  approve:
+    name: Awaiting Approval
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Approval granted
+        run: |
+          echo "✅ Deployment to '${{ inputs.environment }}' has been approved."
+          echo "⏰ Approved at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "👤 Approved by: ${{ github.actor }}"
